@@ -1077,6 +1077,9 @@ class ChannelList:
 
     def remove(self, channel: Channel):
         iid = channel.iid
+        if iid not in self._channel_map:
+            # the channel isn't on the list
+            return
         del self._channel_map[iid]
         self._table.delete(iid)
 

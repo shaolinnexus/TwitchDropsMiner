@@ -521,6 +521,7 @@ class Twitch:
             await self._session.close()
             self._session = None
         self._drops.clear()
+        self._campaigns.clear()
         self.channels.clear()
         self.inventory.clear()
         self._auth_state.clear()
@@ -780,7 +781,8 @@ class Twitch:
                 ordered_channels = ordered_channels[:MAX_CHANNELS]
                 if to_remove_channels:
                     # tracked channels and gui were cleared earlier, so no need to do it here
-                    # just make sure to unsubscribe from their topics
+                    # just make sure to unsubscribe from their topics,
+                    # and cancel any pending online checks
                     to_remove_topics = []
                     for channel in to_remove_channels:
                         to_remove_topics.append(
@@ -789,6 +791,7 @@ class Twitch:
                         to_remove_topics.append(
                             WebsocketTopic.as_str("Channel", "StreamUpdate", channel.id)
                         )
+                        channel.remove()
                     self.websocket.remove_topics(to_remove_topics)
                     del to_remove_channels, to_remove_topics
                 # set our new channel list
@@ -1491,6 +1494,7 @@ class Twitch:
         campaigns.sort(key=lambda c: c.eligible, reverse=True)
 
         self._drops.clear()
+        self._campaigns.clear()
         self.gui.inv.clear()
         self.inventory.clear()
         self._mnt_triggers.clear()
