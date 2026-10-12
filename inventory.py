@@ -298,12 +298,10 @@ class TimedDrop(BaseDrop):
         self._twitch.gui.inv.update_drop(self)
 
     def _update_real_minutes(self, delta: int) -> None:
-        if self.real_current_minutes + delta < 0:
-            self.real_current_minutes = 0
-        if self.real_current_minutes + delta < self.required_minutes:
-            self.real_current_minutes += delta
-        else:
-            self.real_current_minutes = self.required_minutes
+        # clamp the result to the [0, required_minutes] range
+        self.real_current_minutes = max(
+            0, min(self.required_minutes, self.real_current_minutes + delta)
+        )
         self.extra_current_minutes = 0
         self._on_state_changed()
 
