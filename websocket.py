@@ -15,6 +15,7 @@ from constants import PING_INTERVAL, PING_TIMEOUT, MAX_WEBSOCKETS, WS_TOPICS_LIM
 from utils import (
     CHARS_ASCII,
     chunk,
+    redact,
     task_wrapper,
     create_nonce,
     json_minify,
@@ -260,7 +261,7 @@ class Websocket:
                 raw_message: aiohttp.WSMessage = await ws.receive(timeout=timeout)
             except aiohttp.ClientConnectionError:
                 raise WebsocketClosed(received=False)
-            ws_logger.debug(f"Websocket[{self._idx}] received: {raw_message}")
+            ws_logger.debug(redact(f"Websocket[{self._idx}] received: {raw_message}"))
             if raw_message.type is WSMsgType.TEXT:
                 message: JsonType = json.loads(raw_message.data)
                 messages.append(message)
@@ -339,7 +340,7 @@ class Websocket:
             await ws.send_json(message, dumps=json_minify)
         except aiohttp.ClientConnectionError:
             raise WebsocketClosed(received=False)
-        ws_logger.debug(f"Websocket[{self._idx}] sent: {message}")
+        ws_logger.debug(redact(f"Websocket[{self._idx}] sent: {message}"))
 
 
 class WebsocketPool:

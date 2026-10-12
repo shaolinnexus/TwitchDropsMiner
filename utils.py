@@ -93,6 +93,33 @@ def lock_file(path: Path) -> tuple[bool, io.TextIOWrapper]:
     return True, file
 
 
+_REDACT_KEYS = (
+    r"authorization|auth[_-]token|access_token|refresh_token|token|device_code"
+    r"|password|authy_token|twitchguard_code|sig|signature"
+)
+_REDACT_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    # 'key': 'value' and "key": "value" (dict representations and JSON)
+    (
+        re.compile(rf"""(['"](?:{_REDACT_KEYS})['"]\s*:\s*)(['"])(?:\\.|(?!\2).)*\2""", re.I),
+        r"\1\2***\2",
+    ),
+    # key=value (query strings, form data and cookies)
+    (re.compile(rf"""((?<![\w-])(?:{_REDACT_KEYS})=)[^&;\s'"]+""", re.I), r"\1***"),
+    # credentials embedded within URLs (proxy)
+    (re.compile(r"""(\w+://)[^/\s:@'"]+:[^/\s@'"]+@"""), r"\1***:***@"),
+]
+
+
+def redact(text: str) -> str:
+    """
+    Removes credentials (tokens, passwords, signatures, etc.) from the text,
+    making it safe to be logged.
+    """
+    for pattern, replacement in _REDACT_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
+
+
 def json_minify(data: JsonType | list[JsonType]) -> str:
     """
     Returns minified JSON for payload usage.

@@ -33,6 +33,7 @@ from exceptions import (
 from utils import (
     CHARS_HEX_LOWER,
     chunk,
+    redact,
     timestamp,
     create_nonce,
     task_wrapper,
@@ -1250,7 +1251,7 @@ class Twitch:
         method = method.upper()
         if self.settings.proxy and "proxy" not in kwargs:
             kwargs["proxy"] = self.settings.proxy
-        logger.debug(f"Request: ({method=}, {url=}, {kwargs=})")
+        logger.debug(redact(f"Request: ({method=}, {url=}, {kwargs=})"))
         session_timeout = timedelta(seconds=session.timeout.total or 0)
         backoff = ExponentialBackoff(maximum=3*60)
         for delay in backoff:
@@ -1268,7 +1269,7 @@ class Twitch:
                     session.request(method, url, **kwargs)
                 )
                 assert response is not None
-                logger.debug(f"Response: {response.status}: {response}")
+                logger.debug(redact(f"Response: {response.status}: {response}"))
                 if response.status < 500:
                     # pre-read the response to avoid getting errors outside of the context manager
                     raw_response = await response.read()  # noqa
@@ -1304,7 +1305,7 @@ class Twitch:
     async def gql_request(
         self, ops: GQLOperation | list[GQLOperation]
     ) -> JsonType | list[JsonType]:
-        gql_logger.debug(f"GQL Request: {ops}")
+        gql_logger.debug(redact(f"GQL Request: {ops}"))
         backoff = ExponentialBackoff(maximum=60)
         # Use a flag to retry the request a single time, if a specific set of errors is encountered
         single_retry: bool = True
@@ -1318,7 +1319,7 @@ class Twitch:
                     headers=auth_state.headers(user_agent=self._client_type.USER_AGENT, gql=True),
                 ) as response:
                     response_json: JsonType | list[JsonType] = await response.json()
-            gql_logger.debug(f"GQL Response: {response_json}")
+            gql_logger.debug(redact(f"GQL Response: {response_json}"))
             orig_response = response_json
             if isinstance(response_json, list):
                 response_list = response_json
