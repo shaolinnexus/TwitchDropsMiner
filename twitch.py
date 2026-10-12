@@ -1279,12 +1279,21 @@ class Twitch:
                 )
                 assert response is not None
                 logger.debug(redact(f"Response: {response.status}: {response}"))
-                if response.status < 500:
+                if response.status == 429:
+                    # rate limited: honour the Retry-After header if present, otherwise back off
+                    retry_after: str | None = response.headers.get("Retry-After")
+                    if retry_after is not None and retry_after.strip().isdigit():
+                        delay = min(max(delay, float(retry_after)), 15*60)
+                    logger.warning(
+                        redact(f"Rate limited, retrying in {round(delay)}s: {method} {url}")
+                    )
+                elif response.status < 500:
                     # pre-read the response to avoid getting errors outside of the context manager
                     raw_response = await response.read()  # noqa
                     yield response
                     return
-                self.print(_("error", "site_down").format(seconds=round(delay)))
+                else:
+                    self.print(_("error", "site_down").format(seconds=round(delay)))
             except aiohttp.ClientConnectorCertificateError:
                 # for a case where SSL verification fails
                 raise
