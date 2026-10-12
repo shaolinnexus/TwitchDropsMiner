@@ -48,6 +48,9 @@ class ImageCache:
             # then reinitialize the image cache anew
             cleanup = True
             self._hashes = default_database.copy()
+        if not self._hashes:
+            # an empty (or unreadable, see json_load) mapping means all existing files are orphans
+            cleanup = True
         self._images: dict[ImageHash, Image] = {}
         self._photos: dict[tuple[ImageHash, ImageSize], PhotoImage] = {}
         self._lock = asyncio.Lock()

@@ -258,13 +258,20 @@ def json_load(path: Path, defaults: _JSON_T, *, merge: bool = True) -> _JSON_T:
         try:
             with new_path.open('r', encoding="utf8") as file:
                 combined = _remove_missing(json.load(file, object_hook=_deserialize))
-        except json.JSONDecodeError:
+        except (ValueError, KeyError, TypeError):
             # remove invalid file
             new_path.unlink()
     # try the old file
     if combined is None and path.exists():
-        with path.open('r', encoding="utf8") as file:
-            combined = _remove_missing(json.load(file, object_hook=_deserialize))
+        try:
+            with path.open('r', encoding="utf8") as file:
+                combined = _remove_missing(json.load(file, object_hook=_deserialize))
+        except (ValueError, KeyError, TypeError, AttributeError):
+            # the file is corrupted - move it out of the way and fall back to the defaults
+            bad_path: Path = path.with_name(f"{path.name}.bad")
+            logger.warning(f"Unable to load {path.name}, renaming it to {bad_path.name}")
+            with suppress(OSError):
+                path.replace(bad_path)
     # handle defaults and merging
     if combined is None:
         combined = dict(defaults)  # always make a copy of defaults
