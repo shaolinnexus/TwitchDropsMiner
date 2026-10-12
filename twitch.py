@@ -913,7 +913,10 @@ class Twitch:
             if not succeeded:
                 logger.log(CALL, f"Watch requested failed for channel: {channel.name}")
             # wait ~15 seconds for a progress update
-            await asyncio.sleep(15 - min(time() - last_sent, 15))
+            await self._watch_sleep(15 - min(time() - last_sent, 15))
+            if self._watching_restart.is_set():
+                # watching has been restarted, send the watch request again right away
+                continue
             if self.gui.progress.minute_almost_done():
                 # If the previous update was more than ~60s ago, and the progress tracker
                 # isn't counting down anymore, that means Twitch has temporarily
@@ -947,8 +950,11 @@ class Twitch:
 
                 # Solution 2: If GQL fails, figure out which campaign we're most likely mining
                 # right now, and then bump up the minutes on it's drops
+                # NOTE: Only do this if the watch request succeeded, as we aren't mining otherwise
                 if not handled:
-                    if (active_campaign := self.get_active_campaign(channel)) is not None:
+                    if not succeeded:
+                        logger.log(CALL, "Skipping drop progress bump: watch request failed")
+                    elif (active_campaign := self.get_active_campaign(channel)) is not None:
                         active_campaign.bump_minutes(channel)
                         # NOTE: This usually gets overwritten below
                         drop_text = f"Unknown drop ({active_campaign.game})"
@@ -1040,6 +1046,9 @@ class Twitch:
     def watch(self, channel: Channel, *, update_status: bool = True):
         self.gui.tray.change_icon("active")
         self.gui.channels.set_watching(channel)
+        if self.watching_channel.get_with_default(None) != channel:
+            # wake up the watch loop, so the new channel is watched right away
+            self._watching_restart.set()
         self.watching_channel.set(channel)
         if update_status:
             status_text = _("status", "watching").format(channel=channel.name)
