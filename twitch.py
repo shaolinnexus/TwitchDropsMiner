@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import ssl
 import json
 import asyncio
 import logging
-from time import time
+from time import time, monotonic
 from copy import deepcopy
 from itertools import chain
 from functools import partial
@@ -28,7 +29,6 @@ from exceptions import (
     MinerException,
     RequestInvalid,
     CaptchaRequired,
-    RequestException,
 )
 from utils import (
     CHARS_HEX_LOWER,
@@ -37,6 +37,7 @@ from utils import (
     timestamp,
     create_nonce,
     task_wrapper,
+    format_traceback,
     RateLimiter,
     restrict_permissions,
     AwaitableValue,
@@ -77,6 +78,27 @@ class SkipExtraJsonDecoder(json.JSONDecoder):
 
 
 SAFE_LOADS = lambda s: json.loads(s, cls=SkipExtraJsonDecoder)
+
+
+def is_recoverable(exc: BaseException) -> bool:
+    """
+    Determines if the client can recover from the given exception by restarting itself.
+    """
+    if isinstance(exc, (ExitRequest, LoginException, ssl.SSLError, aiohttp.ClientSSLError)):
+        # exit requests, login failures (including captcha) and SSL/certificate errors
+        return False
+    return isinstance(
+        exc,
+        (
+            MinerException,  # includes GQLException and RequestException
+            aiohttp.ClientError,
+            asyncio.TimeoutError,
+            # unexpected response data
+            KeyError,
+            TypeError,
+            ValueError,
+        ),
+    )
 
 
 class _AuthState:
@@ -476,6 +498,8 @@ class Twitch:
         self.websocket = WebsocketPool(self)
         # Maintenance task
         self._mnt_task: asyncio.Task[None] | None = None
+        # Recoverable exception of a critical task that died, to be handled by the main task
+        self._critical_error: Exception | None = None
 
     async def get_session(self) -> aiohttp.ClientSession:
         if (session := self._session) is not None:
@@ -567,6 +591,18 @@ class Twitch:
         """
         self.change_state(State.EXIT)
 
+    def critical_failure(self, exc: Exception) -> None:
+        """
+        Called when a critical task dies due to an exception.
+        Recoverable exceptions are passed onto the main task, which restarts the client.
+        Otherwise, the application is closed.
+        """
+        if is_recoverable(exc):
+            self._critical_error = exc
+            self.change_state(State.RESTART)
+        else:
+            self.close()
+
     def prevent_close(self):
         """
         Called when the application window has to be prevented from closing, even after the user
@@ -613,7 +649,11 @@ class Twitch:
             with open(DUMP_PATH, 'w', encoding="utf8"):
                 # replace the existing file with an empty one
                 pass
+        # backoff in minutes, for restarting after recoverable errors
+        backoff = ExponentialBackoff(maximum=30)
         while True:
+            self._critical_error = None
+            run_started: float = monotonic()
             try:
                 await self._run()
                 break
@@ -621,8 +661,27 @@ class Twitch:
                 await self.shutdown()
             except ExitRequest:
                 break
-            except aiohttp.ContentTypeError as exc:
-                raise RequestException(_("login", "unexpected_content")) from exc
+            except Exception as exc:
+                if not is_recoverable(exc):
+                    raise
+                if monotonic() - run_started > 3600:
+                    # the last run went fine for a while, so start the backoff anew
+                    backoff.reset()
+                delay: float = 60 * next(backoff)
+                logger.exception("Recoverable error encountered, restarting")
+                if isinstance(exc, aiohttp.ContentTypeError):
+                    self.print(_("login", "unexpected_content"))
+                self.print(
+                    f"Error encountered, restarting in {round(delay)} seconds:\n"
+                    f"{format_traceback(exc)}"
+                )
+                self.gui.tray.change_icon("error")
+                await self.shutdown()
+                # wait before restarting, unless the application is being closed
+                with suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self.gui.wait_until_closed(), timeout=delay)
+                if self.gui.close_requested:
+                    break
 
     async def _run(self):
         """
@@ -898,6 +957,10 @@ class Twitch:
                     self.change_state(State.IDLE)
                 del new_watching, selected_channel, watching_channel
             elif self._state is State.RESTART:
+                if (critical_error := self._critical_error) is not None:
+                    # a critical task has died - let the run loop handle it's exception
+                    self._critical_error = None
+                    raise critical_error
                 raise ReloadRequest()
             elif self._state is State.EXIT:
                 self.gui.tray.change_icon("pickaxe")
