@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import asyncio
 import logging
-from time import time
+from time import monotonic
 from contextlib import suppress
 from typing import Any, Literal, TYPE_CHECKING
 
@@ -52,7 +52,7 @@ class Websocket:
         # set when the topics changed
         self._topics_changed = asyncio.Event()
         # ping timestamps
-        self._next_ping: float = time()
+        self._next_ping: float = monotonic()
         self._max_pong: float = self._next_ping + PING_TIMEOUT.total_seconds()
         # main task, responsible for receiving messages, sending them, and websocket ping
         self._handle_task: asyncio.Task[None] | None = None
@@ -76,7 +76,7 @@ class Websocket:
 
     def request_reconnect(self):
         # reset our ping interval, so we send a PING after reconnect right away
-        self._next_ping = time()
+        self._next_ping = monotonic()
         self._reconnect_requested.set()
 
     async def start(self):
@@ -121,25 +121,31 @@ class Websocket:
         else:
             proxy = None
         for delay in backoff:
+            connected_at: float | None = None
             try:
                 async with session.ws_connect(ws_url, proxy=proxy) as websocket:
+                    connected_at = monotonic()
                     yield websocket
-                    backoff.reset()
             except (
                 asyncio.TimeoutError,
                 aiohttp.ClientResponseError,
                 aiohttp.ClientConnectionError,
             ):
-                ws_logger.info(
-                    f"Websocket[{self._idx}] connection problem (sleep: {round(delay)}s)"
-                )
-                await asyncio.sleep(delay)
+                ws_logger.info(f"Websocket[{self._idx}] connection problem")
             except RuntimeError:
                 ws_logger.warning(
                     f"Websocket[{self._idx}] exiting backoff connect loop "
                     "because session is closed (RuntimeError)"
                 )
                 break
+            if connected_at is not None and monotonic() - connected_at > 60:
+                # the connection was stable - start the backoff anew
+                backoff.reset()
+                delay = next(backoff)
+            # always wait before reconnecting, to avoid hammering the server
+            # with connections that keep getting closed right away
+            ws_logger.info(f"Websocket[{self._idx}] reconnecting in {round(delay)}s")
+            await asyncio.sleep(delay)
 
     @task_wrapper(critical=True)
     async def _handle(self):
@@ -155,6 +161,9 @@ class Websocket:
         ):
             self._ws.set(websocket)
             self._reconnect_requested.clear()
+            # reset the ping timestamps, so we send a PING right away on the new connection
+            self._next_ping = monotonic()
+            self._max_pong = self._next_ping + PING_TIMEOUT.total_seconds()
             # NOTE: _topics_changed doesn't start set,
             # because there's no initial topics we can sub to right away
             self.set_status(_("gui", "websocket", "connected"))
@@ -188,7 +197,7 @@ class Websocket:
             ws_logger.warning(f"Websocket[{self._idx}] reconnecting...")
 
     async def _handle_ping(self):
-        now = time()
+        now = monotonic()
         if now >= self._next_ping:
             self._next_ping = now + PING_INTERVAL.total_seconds()
             self._max_pong = now + PING_TIMEOUT.total_seconds()  # wait for a PONG for up to 10s
