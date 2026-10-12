@@ -361,6 +361,20 @@ class _AuthState:
         async with self._lock:
             await self._validate()
 
+    async def token_valid(self) -> bool:
+        """
+        Checks if the current access token is still valid.
+        Only a missing or rejected token counts as invalid; other responses are ignored.
+        """
+        if not hasattr(self, "access_token"):
+            return False
+        async with self._twitch.request(
+            "GET",
+            "https://id.twitch.tv/oauth2/validate",
+            headers={"Authorization": f"OAuth {self.access_token}"}
+        ) as response:
+            return response.status != 401
+
     async def _validate(self):
         if not hasattr(self, "session_id"):
             self.session_id = create_nonce(CHARS_HEX_LOWER, 16)
@@ -998,6 +1012,12 @@ class Twitch:
             if next_trigger != next_period:
                 logger.log(CALL, "Maintenance task requests channels cleanup")
                 self.change_state(State.CHANNELS_CLEANUP)
+        # ensure our access token hasn't been invalidated in the meantime
+        if not await self._auth_state.token_valid():
+            logger.warning("Access token is no longer valid, restarting to log in again")
+            self._auth_state.invalidate()
+            self.change_state(State.RESTART)
+            return
         # this triggers a restart of this task every (up to) 60 minutes
         logger.log(CALL, "Maintenance task requests a reload")
         self.change_state(State.INVENTORY_FETCH)
