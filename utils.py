@@ -241,6 +241,15 @@ def merge_json(obj: JsonType, template: Mapping[Any, Any]) -> None:
             obj[k] = template[k]
 
 
+def restrict_permissions(path: Path) -> None:
+    """
+    Makes the file readable and writable only by it's owner. No-op on Windows.
+    """
+    if sys.platform != "win32":
+        with suppress(OSError):
+            os.chmod(path, 0o600)
+
+
 def json_load(path: Path, defaults: _JSON_T, *, merge: bool = True) -> _JSON_T:
     new_path: Path = path.with_name(f"{path.name}.new")
     combined: JsonType | None = None
@@ -268,6 +277,9 @@ def json_save(path: Path, contents: Mapping[Any, Any], *, sort: bool = False) ->
     new_path: Path = path.with_name(f"{path.name}.new")
     with new_path.open('w', encoding="utf8") as file:
         json.dump(contents, file, default=_serialize, sort_keys=sort, indent=4)
+        file.flush()
+        os.fsync(file.fileno())
+    restrict_permissions(new_path)
     new_path.replace(path)
 
 

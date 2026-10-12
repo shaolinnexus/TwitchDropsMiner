@@ -37,6 +37,7 @@ from utils import (
     create_nonce,
     task_wrapper,
     RateLimiter,
+    restrict_permissions,
     AwaitableValue,
     ExponentialBackoff,
 )
@@ -426,6 +427,7 @@ class _AuthState:
             # update our cookie and save it
             jar.update_cookies(cookie, client_info.CLIENT_URL)
             jar.save(COOKIES_PATH)
+            restrict_permissions(COOKIES_PATH)
         self._twitch.gui.help._invalidate_button.config(state="normal")
         self._logged_in.set()
 
@@ -515,6 +517,7 @@ class Twitch:
                 if not cookie:
                     del cookie_jar._cookies[cookie_key]
             cookie_jar.save(COOKIES_PATH)
+            restrict_permissions(COOKIES_PATH)
             await self._session.close()
             self._session = None
         self._drops.clear()
