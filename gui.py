@@ -523,6 +523,13 @@ class LoginData:
     password: str
     token: str
 
+    def username_valid(self) -> bool:
+        # basic input data validation: 3-25 characters in length, only ascii and underscores
+        return (
+            3 <= len(self.username) <= 25
+            and re.match(r'^[a-zA-Z0-9_]+$', self.username) is not None
+        )
+
 
 class LoginForm:
     def __init__(self, manager: GUIManager, master: ttk.Widget):
@@ -580,11 +587,7 @@ class LoginForm:
                 self._pass_entry.get(),
                 self._token_entry.get().strip(),
             )
-            # basic input data validation: 3-25 characters in length, only ascii and underscores
-            if (
-                not 3 <= len(login_data.username) <= 25
-                and re.match(r'^[a-zA-Z0-9_]+$', login_data.username)
-            ):
+            if not login_data.username_valid():
                 self.clear(login=True)
                 continue
             if len(login_data.password) < 8:
