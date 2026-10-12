@@ -6,6 +6,7 @@ import json
 import asyncio
 import logging
 from base64 import b64encode
+from collections import deque
 from functools import cached_property
 from typing import Any, SupportsInt, cast, TYPE_CHECKING
 
@@ -42,6 +43,8 @@ class Stream:
         self.game: Game | None = Game(game) if game else None
         self.title: str = title
         self._stream_url: URLType | None = None
+        # playlist segments we've already sent a watch request for
+        self._sent_segments: deque[URLType] = deque(maxlen=64)
 
     @cached_property
     def _watch_payload(self) -> list[JsonType]:
@@ -428,17 +431,29 @@ class Channel:
         if needs_display:
             self.display()
 
-    # async def _send_watch_playlist(self) -> bool:
     async def send_watch(self) -> bool:
         """
         This performs a HEAD request on the stream's current playlist,
         to simulate watching the stream.
         Optimally, send every ~20 seconds to advance drops.
         """
-        if self._stream is None:
+        stream = self._stream
+        if stream is None:
             return False
+        try:
+            if await self._send_watch_playlist(stream):
+                return True
+        except (
+            RequestException, aiohttp.ClientError, ValueError, KeyError, TypeError
+        ) as exc:
+            logger.warning(f"Send watch failed for channel {self._login}: {exc!r}")
+        # invalidate the stream URL, so that a fresh one is fetched on the next attempt
+        stream._stream_url = None
+        return False
+
+    async def _send_watch_playlist(self, stream: Stream) -> bool:
         # get the stream url
-        stream_url = await self._stream.get_stream_url()
+        stream_url = await stream.get_stream_url()
         if stream_url is None:
             return False
         # fetch a list of chunks available to download for the stream
@@ -474,13 +489,24 @@ class Channel:
             for chunk in available_chunks.strip().split("\n")
             if chunk.startswith("http")
         ]
-        for stream_chunk_url in chunks_list:
+        if not chunks_list:
+            return False
+        # only request the chunks we haven't requested yet,
+        # or at least the newest one, if there's no new chunks available
+        sent_chunks = stream._sent_segments
+        new_chunks: list[URLType] = [
+            chunk_url for chunk_url in chunks_list if chunk_url not in sent_chunks
+        ] or chunks_list[-1:]
+        succeeded: bool = False
+        for stream_chunk_url in new_chunks:
             # sending a HEAD request is enough to advance the drops,
             # without downloading the actual stream data
             async with self._twitch.request("HEAD", stream_chunk_url) as head_response:
-                if head_response.status != 200:
-                    return False
-        return True
+                succeeded = head_response.status == 200
+            if stream_chunk_url not in sent_chunks:
+                sent_chunks.append(stream_chunk_url)
+        # report success as long as the newest chunk request succeeded
+        return succeeded
 
     async def _send_watch_spade(self) -> bool:
         if self._stream is None:
