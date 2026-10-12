@@ -113,20 +113,24 @@ class ImageCache:
             if image is None:
                 try:
                     async with self._twitch.request("GET", url) as response:
-                        if response.status != 404:
+                        if response.status == 200:
                             image = Image_module.open(io.BytesIO(await response.read()))
+                            image.load()  # force full decode so broken data is caught here
                 except Exception:
-                    pass
+                    image = None
                 if image is None:
-                    # use a blank white image as a fallback
+                    # use a blank white image as a fallback, for this session only:
+                    # don't store it, so that the download is retried next time
                     image = Image_module.new("RGB", (10, 10), (255, 255, 255))
-                img_hash = self._hash(image)
-                self._images[img_hash] = image
-                image.save(CACHE_PATH / img_hash)
-                self._hashes[url] = {
-                    "hash": img_hash,
-                    "expires": self._new_expires()
-                }
+                    img_hash = self._hash(image)
+                else:
+                    img_hash = self._hash(image)
+                    self._images[img_hash] = image
+                    image.save(CACHE_PATH / img_hash)
+                    self._hashes[url] = {
+                        "hash": img_hash,
+                        "expires": self._new_expires()
+                    }
         # NOTE: If self._hashes ever stops being updated in both above if cases,
         # this will need to be moved
         self._altered = True
