@@ -1312,6 +1312,16 @@ class Twitch:
             with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self.gui.wait_until_closed(), timeout=delay)
 
+    def _auth_failed(self) -> NoReturn:
+        """
+        Called when a request fails due to an invalid access token.
+        Invalidates the auth state and requests a restart, which re-validates the login.
+        """
+        logger.warning("Access token has been rejected, restarting to log in again")
+        self._auth_state.invalidate()
+        self.change_state(State.RESTART)
+        raise GQLException("Unauthorized")
+
     @overload
     async def gql_request(self, ops: GQLOperation) -> JsonType:
         ...
@@ -1336,7 +1346,15 @@ class Twitch:
                     json=ops,
                     headers=auth_state.headers(user_agent=self._client_type.USER_AGENT, gql=True),
                 ) as response:
-                    response_json: JsonType | list[JsonType] = await response.json()
+                    if response.status == 401:
+                        # our access token is no longer valid
+                        self._auth_failed()
+                    try:
+                        response_json: JsonType | list[JsonType] = await response.json()
+                    except (aiohttp.ContentTypeError, ValueError) as exc:
+                        raise GQLException(
+                            f"Invalid GQL response: {response.status}, {response.content_type}"
+                        ) from exc
             gql_logger.debug(redact(f"GQL Response: {response_json}"))
             orig_response = response_json
             if isinstance(response_json, list):
@@ -1356,9 +1374,11 @@ class Twitch:
                                     "PersistedQueryNotFound",
                                 )
                             ):
+                                operation_name = (
+                                    (response_json.get("extensions") or {}).get("operationName")
+                                )
                                 logger.error(
-                                    f"Retrying a {error_dict['message']} for "
-                                    f"{response_json['extensions']['operationName']}"
+                                    f"Retrying a {error_dict['message']} for {operation_name}"
                                 )
                                 single_retry = False
                                 if delay < 5:
@@ -1368,11 +1388,15 @@ class Twitch:
                                 break
                             elif error_dict["message"] == "server error":
                                 # nullify the key the error path points to
-                                data_dict: JsonType = response_json["data"]
-                                path: list[str] = error_dict.get("path", [])
-                                for key in path[:-1]:
-                                    data_dict = data_dict[key]
-                                data_dict[path[-1]] = None
+                                path: list[str] = error_dict.get("path") or []
+                                try:
+                                    data_dict: JsonType = response_json["data"]
+                                    for key in path[:-1]:
+                                        data_dict = data_dict[key]
+                                    data_dict[path[-1]] = None
+                                except (KeyError, IndexError, TypeError):
+                                    # no data or invalid path - can't handle it, raise below
+                                    continue
                                 break
                             elif (
                                 error_dict["message"] in (
@@ -1388,8 +1412,10 @@ class Twitch:
                         raise GQLException(response_json['errors'])
                 # Other error handling
                 elif "error" in response_json:
+                    if response_json.get("status") == 401:
+                        self._auth_failed()
                     raise GQLException(
-                        f"{response_json['error']}: {response_json['message']}"
+                        f"{response_json['error']}: {response_json.get('message')}"
                     )
                 if force_retry:
                     break
